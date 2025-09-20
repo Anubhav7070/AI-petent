@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { QrCode, RefreshCw, Copy, Download, Clock, Users, CheckCircle2 } from "lucide-react"
+import { qrScannerService } from "@/lib/qr-scanner-utils"
 
 interface QRSession {
   id: string
@@ -25,42 +26,50 @@ export function QRCodeGenerator() {
   const [currentSession, setCurrentSession] = useState<QRSession | null>(null)
   const [timeRemaining, setTimeRemaining] = useState<string>("")
 
-  const generateQRCode = () => {
+  const generateQRCode = async () => {
     if (!classId.trim() || !sessionName.trim()) {
       alert("Please enter both Class ID and Session Name")
       return
     }
 
-    const sessionId = `qr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-    const createdAt = new Date()
-    const expiresAt = new Date(createdAt.getTime() + 24 * 60 * 60 * 1000) // 24 hours
-
-    const qrData = JSON.stringify({
-      sessionId,
-      classId: classId.trim(),
-      sessionName: sessionName.trim(),
-      timestamp: createdAt.toISOString(),
-      expiresAt: expiresAt.toISOString(),
-      type: "attendance_session",
-    })
-
-    const session: QRSession = {
-      id: sessionId,
-      classId: classId.trim(),
-      sessionName: sessionName.trim(),
-      qrData,
-      createdAt,
-      expiresAt,
-      isActive: true,
-      attendanceCount: 0,
+    if (!qrScannerService) {
+      alert("QR scanner service not available")
+      return
     }
 
-    setCurrentSession(session)
+    try {
+      // Create session using QR scanner service
+      const result = await qrScannerService.createSession(
+        sessionName.trim(),
+        classId.trim(),
+        24 // 24 hours duration
+      )
 
-    // Store session in localStorage for persistence
-    localStorage.setItem("currentQRSession", JSON.stringify(session))
+      if (result.success && result.session && result.qr_data) {
+        const session: QRSession = {
+          id: result.session.session_id,
+          classId: classId.trim(),
+          sessionName: sessionName.trim(),
+          qrData: result.qr_data,
+          createdAt: new Date(result.session.created_at),
+          expiresAt: new Date(result.session.expires_at),
+          isActive: true,
+          attendanceCount: 0,
+        }
 
-    console.log("[v0] Generated QR session:", sessionId)
+        setCurrentSession(session)
+
+        // Store session in localStorage for persistence
+        localStorage.setItem("currentQRSession", JSON.stringify(session))
+
+        console.log("[v0] Generated QR session:", result.session.session_id)
+      } else {
+        alert("Failed to create session. Please try again.")
+      }
+    } catch (error) {
+      console.error("Error creating session:", error)
+      alert("Failed to create session. Please try again.")
+    }
   }
 
   const generateVisualQRCode = (data: string) => {

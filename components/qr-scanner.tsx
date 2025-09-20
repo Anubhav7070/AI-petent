@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Camera, CameraOff, UserCheck, AlertTriangle, CheckCircle2 } from "lucide-react"
 import { studentDB } from "@/lib/student-database"
+import { qrScannerService } from "@/lib/qr-scanner-utils"
 
 interface ScannedSession {
   sessionId: string
@@ -28,18 +29,26 @@ export function QRScanner() {
   const [studentId, setStudentId] = useState("")
   const [attendanceMarked, setAttendanceMarked] = useState(false)
 
-  const detectQRCode = (imageData: ImageData): string | null => {
+  const detectQRCode = async (): Promise<string | null> => {
     try {
-      // Check for high contrast patterns that indicate QR code
-      const hasQRPattern = checkForQRPattern(imageData)
+      if (!videoRef.current || !qrScannerService) return null
 
-      if (hasQRPattern) {
-        // In a real implementation, this would use a QR code library
-        // For demo purposes, we'll simulate successful detection
-        const savedSession = localStorage.getItem("currentQRSession")
-        if (savedSession) {
-          const session = JSON.parse(savedSession)
-          return session.qrData
+      // Use real QR scanning with Python backend
+      const result = await qrScannerService.scanQRCode(videoRef.current)
+      
+      if (result.success && result.results.length > 0) {
+        const qrResult = result.results[0]
+        
+        if (qrResult.type === "attendance_session" && qrResult.success) {
+          // Return session QR data
+          return JSON.stringify({
+            sessionId: qrResult.session_id,
+            classId: qrResult.class_id,
+            sessionName: qrResult.session_name,
+            timestamp: new Date().toISOString(),
+            expiresAt: qrResult.expires_at,
+            type: "attendance_session"
+          })
         }
       }
 
@@ -139,7 +148,7 @@ export function QRScanner() {
     setIsLoading(false)
   }
 
-  const processFrame = () => {
+  const processFrame = async () => {
     if (!videoRef.current || !canvasRef.current || !isScanning) return
 
     const video = videoRef.current
@@ -153,36 +162,38 @@ export function QRScanner() {
 
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
 
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-    const qrResult = detectQRCode(imageData)
+    // Only scan every 30 frames to reduce API calls
+    if (Math.random() < 0.03) { // ~1% chance per frame
+      const qrResult = await detectQRCode()
 
-    if (qrResult && !scannedSession) {
-      try {
-        const sessionData = JSON.parse(qrResult)
+      if (qrResult && !scannedSession) {
+        try {
+          const sessionData = JSON.parse(qrResult)
 
-        // Validate session data
-        if (sessionData.type === "attendance_session" && sessionData.sessionId) {
-          setScannedSession({
-            sessionId: sessionData.sessionId,
-            classId: sessionData.classId,
-            sessionName: sessionData.sessionName,
-            timestamp: sessionData.timestamp,
-            expiresAt: sessionData.expiresAt,
-          })
+          // Validate session data
+          if (sessionData.type === "attendance_session" && sessionData.sessionId) {
+            setScannedSession({
+              sessionId: sessionData.sessionId,
+              classId: sessionData.classId,
+              sessionName: sessionData.sessionName,
+              timestamp: sessionData.timestamp,
+              expiresAt: sessionData.expiresAt,
+            })
 
-          stopScanning()
-          console.log("[v0] QR session detected:", sessionData.sessionId)
+            stopScanning()
+            console.log("[v0] QR session detected:", sessionData.sessionId)
 
-          // Visual feedback
-          ctx.strokeStyle = "#10b981"
-          ctx.lineWidth = 4
-          ctx.strokeRect(50, 50, canvas.width - 100, canvas.height - 100)
-          ctx.fillStyle = "#10b981"
-          ctx.font = "20px sans-serif"
-          ctx.fillText("QR Code Detected!", 60, 40)
+            // Visual feedback
+            ctx.strokeStyle = "#10b981"
+            ctx.lineWidth = 4
+            ctx.strokeRect(50, 50, canvas.width - 100, canvas.height - 100)
+            ctx.fillStyle = "#10b981"
+            ctx.font = "20px sans-serif"
+            ctx.fillText("QR Code Detected!", 60, 40)
+          }
+        } catch (error) {
+          console.error("[v0] Invalid QR data:", error)
         }
-      } catch (error) {
-        console.error("[v0] Invalid QR data:", error)
       }
     }
 
@@ -194,7 +205,7 @@ export function QRScanner() {
     ctx.setLineDash([])
   }
 
-  const markAttendance = () => {
+  const markAttendance = async () => {
     if (!scannedSession || !studentId.trim()) {
       setError("Please enter your Student ID")
       return
@@ -209,36 +220,41 @@ export function QRScanner() {
       return
     }
 
-    const student = studentDB.getStudentByRollNumber(studentId.trim())
-    if (!student) {
-      setError("Student ID not found. Please check your ID and try again.")
+    if (!qrScannerService) {
+      setError("QR scanner service not available")
       return
     }
 
-    // Check if already marked today
-    const today = new Date().toISOString().split("T")[0]
-    const existingAttendance = studentDB.getAttendanceByDate(today).find((record) => record.studentId === student.id)
+    try {
+      // Mark attendance using QR scanner service
+      const result = await qrScannerService.markAttendance(
+        studentId.trim(),
+        scannedSession.sessionId,
+        "qr"
+      )
 
-    if (existingAttendance) {
-      setError(`${student.name} is already marked present for today.`)
-      return
-    }
+      if (result.success) {
+        setAttendanceMarked(true)
+        setError(null)
+        console.log("[v0] Attendance marked:", result.message)
 
-    // Mark attendance
-    const success = studentDB.markAttendance(student.id, "qr", 1.0)
+        // Also mark in local database for consistency
+        const student = studentDB.getStudentByRollNumber(studentId.trim())
+        if (student) {
+          studentDB.markAttendance(student.id, "qr", 1.0)
+        }
 
-    if (success) {
-      setAttendanceMarked(true)
-      setError(null)
-      console.log("[v0] Attendance marked for:", student.name)
-
-      // Reset after 3 seconds
-      setTimeout(() => {
-        setScannedSession(null)
-        setStudentId("")
-        setAttendanceMarked(false)
-      }, 3000)
-    } else {
+        // Reset after 3 seconds
+        setTimeout(() => {
+          setScannedSession(null)
+          setStudentId("")
+          setAttendanceMarked(false)
+        }, 3000)
+      } else {
+        setError(result.message)
+      }
+    } catch (error) {
+      console.error("Error marking attendance:", error)
       setError("Failed to mark attendance. Please try again.")
     }
   }

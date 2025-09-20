@@ -44,7 +44,7 @@ export function FacialRecognition() {
   const [attendanceMarked, setAttendanceMarked] = useState<Set<string>>(new Set())
 
   const detectFaces = async (imageData: ImageData): Promise<DetectedFace[]> => {
-    if (!videoRef.current) return []
+    if (!videoRef.current || !faceRecognitionService) return []
 
     try {
       const faceDetections = await faceRecognitionService.detectFaces(videoRef.current)
@@ -55,16 +55,28 @@ export function FacialRecognition() {
         let matchedStudent: Student | null = null
         let studentName: string | undefined = undefined
 
-        if (detection.descriptor) {
-          matchedStudent = studentDB.findStudentByFaceDescriptor(detection.descriptor, 0.6)
-          if (matchedStudent) {
-            studentName = matchedStudent.name
-
-            if (!attendanceMarked.has(matchedStudent.id)) {
-              studentDB.markAttendance(matchedStudent.id, "face", detection.confidence)
-              setAttendanceMarked((prev) => new Set(prev).add(matchedStudent.id))
-              console.log(`[v0] Auto-marked attendance for ${matchedStudent.name}`)
+        // Use the new face recognition results
+        if (detection.recognized && detection.studentId && detection.studentName) {
+          // Try to find student in local database
+          matchedStudent = studentDB.getStudentByRollNumber(detection.studentId)
+          if (!matchedStudent) {
+            // Create a temporary student record if not found locally
+            matchedStudent = {
+              id: detection.studentId,
+              name: detection.studentName,
+              rollNumber: detection.studentId,
+              class: "Unknown",
+              section: "Unknown",
+              createdAt: new Date(),
+              updatedAt: new Date(),
             }
+          }
+          studentName = detection.studentName
+
+          if (!attendanceMarked.has(matchedStudent.id)) {
+            studentDB.markAttendance(matchedStudent.id, "face", detection.confidence)
+            setAttendanceMarked((prev) => new Set(prev).add(matchedStudent.id))
+            console.log(`[v0] Auto-marked attendance for ${matchedStudent.name}`)
           }
         }
 
